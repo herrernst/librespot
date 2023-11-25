@@ -9,20 +9,18 @@ use futures_util::{future::IntoStream, FutureExt};
 use governor::{
     clock::MonotonicClock, middleware::NoOpMiddleware, state::InMemoryState, Quota, RateLimiter,
 };
-use http::{header::HeaderValue, Uri};
+use http::{header::HeaderValue};
 use hyper::{
     client::{HttpConnector, ResponseFuture},
     header::USER_AGENT,
     Body, Client, HeaderMap, Request, Response, StatusCode,
 };
-use hyper_proxy::{Intercept, Proxy, ProxyConnector};
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use nonzero_ext::nonzero;
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 use sysinfo::{System, SystemExt};
 use thiserror::Error;
-use url::Url;
 
 use crate::{
     date::Date,
@@ -89,11 +87,10 @@ impl From<HttpClientError> for Error {
     }
 }
 
-type HyperClient = Client<ProxyConnector<HttpsConnector<HttpConnector>>, Body>;
+type HyperClient = Client<HttpsConnector<HttpConnector>, Body>;
 
 pub struct HttpClient {
     user_agent: HeaderValue,
-    proxy_url: Option<Url>,
     hyper_client: OnceCell<HyperClient>,
 
     // while the DashMap variant is more performant, our level of concurrency
@@ -103,7 +100,7 @@ pub struct HttpClient {
 }
 
 impl HttpClient {
-    pub fn new(proxy_url: Option<&Url>) -> Self {
+    pub fn new() -> Self {
         let zero_str = String::from("0");
         let os_version = System::new()
             .os_version()
@@ -139,13 +136,12 @@ impl HttpClient {
 
         Self {
             user_agent,
-            proxy_url: proxy_url.cloned(),
             hyper_client: OnceCell::new(),
             rate_limiter,
         }
     }
 
-    fn try_create_hyper_client(proxy_url: Option<&Url>) -> Result<HyperClient, Error> {
+    fn try_create_hyper_client() -> Result<HyperClient, Error> {
         // configuring TLS is expensive and should be done once per process
         let https_connector = HttpsConnectorBuilder::new()
             .with_native_roots()
@@ -153,24 +149,15 @@ impl HttpClient {
             .enable_http1()
             .enable_http2()
             .build();
-
-        // When not using a proxy a dummy proxy is configured that will not intercept any traffic.
-        // This prevents needing to carry the Client Connector generics through the whole project
-        let proxy = match &proxy_url {
-            Some(proxy_url) => Proxy::new(Intercept::All, proxy_url.to_string().parse()?),
-            None => Proxy::new(Intercept::None, Uri::from_static("0.0.0.0")),
-        };
-        let proxy_connector = ProxyConnector::from_proxy(https_connector, proxy)?;
-
         let client = Client::builder()
             .http2_adaptive_window(true)
-            .build(proxy_connector);
+            .build(https_connector);
         Ok(client)
     }
 
     fn hyper_client(&self) -> Result<&HyperClient, Error> {
         self.hyper_client
-            .get_or_try_init(|| Self::try_create_hyper_client(self.proxy_url.as_ref()))
+            .get_or_try_init(|| Self::try_create_hyper_client())
     }
 
     pub async fn request(&self, req: Request<Body>) -> Result<Response<Body>, Error> {

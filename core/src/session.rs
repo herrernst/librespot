@@ -115,7 +115,7 @@ pub struct Session(Arc<SessionInternal>);
 
 impl Session {
     pub fn new(config: SessionConfig, cache: Option<Cache>) -> Self {
-        let http_client = HttpClient::new(config.proxy.as_ref());
+        let http_client = HttpClient::new();
 
         debug!("new Session");
 
